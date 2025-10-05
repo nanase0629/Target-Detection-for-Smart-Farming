@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>高级图像处理服务 - 控制面板</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f0f2f5;
+            color: #333;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        h1 {
+            color: #1a2b4d;
+        }
+        .container {
+            display: flex;
+            gap: 20px;
+            width: 100%;
+            max-width: 1200px;
+        }
+        .controls, .status {
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .controls {
+            flex: 1;
+        }
+        .video-container {
+            flex: 2;
+            background-color: #000;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            position: relative;
+            min-height: 480px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #video-stream {
+            width: 100%;
+            height: auto;
+            border-radius: 8px;
+        }
+        #placeholder-text {
+            color: #999;
+            font-size: 1.2em;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+        }
+        input[type="text"], input[type="number"], select {
+            width: 100%;
+            padding: 8px;
+            box-sizing: border-box;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+        button {
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1em;
+            transition: background-color 0.3s;
+        }
+        #start-btn {
+            background-color: #28a745;
+            color: white;
+        }
+        #start-btn:hover { background-color: #218838; }
+        #stop-btn {
+            background-color: #dc3545;
+            color: white;
+        }
+        #stop-btn:hover { background-color: #c82333; }
+        button:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+        }
+        .log-panel {
+            margin-top: 20px;
+            width: 100%;
+            max-width: 1200px;
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        #log-output {
+            height: 150px;
+            overflow-y: scroll;
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            padding: 10px;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            font-family: 'Courier New', Courier, monospace;
+        }
+    </style>
+</head>
+<body>
+
+<h1>高级图像处理服务 - 控制面板</h1>
+
+<div class="container">
+    <div class="controls">
+        <h2>控制参数</h2>
+        <form id="control-form">
+            <div class="form-group">
+                <label for="video_path">视频文件路径</label>
+                <input type="text" id="video_path" name="video_path" value="sample.mp4" required>
+                <small>Go服务会从 `./videos/` 目录中寻找此文件。</small>
+            </div>
+            <div class="form-group">
+                <label for="blur_method">模糊方法</label>
+                <select id="blur_method" name="blur_method">
+                    <option value="gaussian" selected>高斯模糊 (Gaussian)</option>
+                    <option value="pixelated">马赛克 (Pixelated)</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="human_conf">人体检测阈值</label>
+                <input type="number" id="human_conf" name="human_conf" value="0.25" step="0.05" min="0.1" max="0.9">
+            </div>
+            <div class="form-group">
+                <label for="chicken_conf">二次检测阈值</label>
+                <input type="number" id="chicken_conf" name="chicken_conf" value="0.25" step="0.05" min="0.1" max="0.9">
+            </div>
+
+            <div class="button-group">
+                <button type="submit" id="start-btn">启动监控</button>
+                <button type="button" id="stop-btn" disabled>停止监控</button>
+            </div>
+        </form>
+    </div>
+
+    <div class="video-container">
+        <p id="placeholder-text">等待视频流...</p>
+        <img id="video-stream" style="display: none;"/>
+    </div>
+</div>
+
+<div class="log-panel">
+    <h2>状态日志</h2>
+    <div id="log-output"></div>
+</div>
+
+<script>
+    const form = document.getElementById('control-form');
+    const startBtn = document.getElementById('start-btn');
+    const stopBtn = document.getElementById('stop-btn');
+    const videoStream = document.getElementById('video-stream');
+    const placeholder = document.getElementById('placeholder-text');
+    const logOutput = document.getElementById('log-output');
+
+    let ws;
+
+    function log(message, type = 'info') {
+        const now = new Date().toLocaleTimeString();
+        const color = type === 'error' ? 'red' : (type === 'success' ? 'green' : 'black');
+        logOutput.innerHTML += `<span style="color: ${color};">[${now}] ${message}</span>\n`;
+        logOutput.scrollTop = logOutput.scrollHeight;
+    }
+
+    function connectWebSocket() {
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
+
+        ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
+            log('WebSocket 连接成功。');
+            videoStream.style.display = 'block';
+            placeholder.style.display = 'none';
+        };
+
+        ws.onmessage = (event) => {
+            // event.data 是一个 Blob 对象，包含二进制图像数据
+            const imageUrl = URL.createObjectURL(event.data);
+            videoStream.src = imageUrl;
+            videoStream.onload = () => {
+                URL.revokeObjectURL(imageUrl); // 释放内存
+            }
+        };
+
+        ws.onerror = (error) => {
+            log('WebSocket 发生错误: ' + error, 'error');
+        };
+
+        ws.onclose = () => {
+            log('WebSocket 连接已关闭。');
+            videoStream.style.display = 'none';
+            placeholder.style.display = 'block';
+            placeholder.textContent = '连接已断开';
+        };
+    }
+
+    async function postData(url = '', data = {}) {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+        return response.json();
+    }
+
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        startBtn.disabled = true;
+        startBtn.textContent = '启动中...';
+
+        const formData = new FormData(form);
+        const data = {
+            video_path: formData.get('video_path'),
+            blur_method: formData.get('blur_method'),
+            human_conf: parseFloat(formData.get('human_conf')),
+            chicken_conf: parseFloat(formData.get('chicken_conf')),
+        };
+
+        log(`发送启动请求: ${JSON.stringify(data)}`);
+
+        try {
+            const response = await postData('/api/start_monitoring', data);
+            if (response.error) {
+                throw new Error(response.error);
+            }
+            log(`服务器响应: ${response.message}`, 'success');
+            stopBtn.disabled = false;
+            if (!ws || ws.readyState === WebSocket.CLOSED) {
+                connectWebSocket();
+            }
+        } catch (error) {
+            log(`启动失败: ${error.message}`, 'error');
+            startBtn.disabled = false;
+        } finally {
+            startBtn.textContent = '启动监控';
+        }
+    });
+
+    stopBtn.addEventListener('click', async () => {
+        stopBtn.disabled = true;
+        stopBtn.textContent = '停止中...';
+        log('发送停止请求...');
+
+        try {
+            const response = await postData('/api/stop_monitoring');
+            if (response.error) {
+                throw new Error(response.error);
+            }
+            log(`服务器响应: ${response.message}`, 'success');
+            startBtn.disabled = false;
+            if (ws) {
+                ws.close();
+            }
+        } catch (error) {
+            log(`停止失败: ${error.message}`, 'error');
+        } finally {
+            stopBtn.textContent = '停止监控';
+        }
+    });
+
+    // 页面加载时检查状态
+    window.addEventListener('load', async () => {
+        try {
+            const response = await fetch('/api/status');
+            const status = await response.json();
+            if (status.is_processing) {
+                log(`服务已在处理视频: ${status.video_path}`);
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+                connectWebSocket();
+            } else {
+                log('服务当前空闲。');
+            }
+        } catch (error) {
+            log('无法获取初始状态: ' + error, 'error');
+        }
+    });
+
+</script>
+</body>
+</html>
